@@ -1,0 +1,312 @@
+---
+title: "Korpusanalyse eines Selbsthilfeforums von Inhaftierung betroffener Angehöriger"
+output:
+  html_notebook: 
+    theme: readable
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+Markus Eckl, 
+Universität Passau, Lehrstuhl für Digital Humanities
+markus.eckl@web.de
+
+Das folgende R Notebook zeigt die Analyse eines Selbsthilfeforums von Inhaftierung betroffener Angehöriger. Mithilfe der Methoden des [Text Minings](https://de.wikipedia.org/wiki/Text_Mining) und des [Topic Modelings](https://en.wikipedia.org/wiki/Topic_model) soll geklärt werden, welche Themen für Betroffene von Inhaftierung von besonderer Relevanz sind und inwiefern sich diese Themen automatisiert erkennen lassen? 
+
+Das Forum wurde mit der Infrastruktur zur Forenanalyse des [Instituts für E-Beratung der Technischen Hochschule Nürnberg](https://www.th-nuernberg.de/einrichtungen-gesamt/in-institute/e-beratung-onlineberatung/) gecrawlt. Zum Zeitpunkt des Crawls war das Forum öffentlich zugänglich und jeder konnte ohne Zugangsbeschränkungen eigene Inhalte veröffentlichen, als auch alle bisherigen Inhalte lesen. Die hier dargelegten Ergebnisse lassen keinerlei Rückschlüsse auf einzelne User*innen zu. 
+
+Für die Datenaufbereitung und die Analyse wurden insbesondere die R Packeges [quanteda](https://quanteda.io/), [spacy](https://spacy.io/), [Structural Topic Modeling (STM)](https://www.structuraltopicmodel.com/) und [STMINSIGHTS](https://cschwem2er.github.io/stminsights/) genutzt. 
+
+# 1. Dateipfad 
+
+```{r setup}
+#path to the project
+library(knitr)
+knitr::opts_knit$set(root.dir = normalizePath("/home/eckl/analyse_straf_forum/"))
+getwd()
+```
+
+# 2. R Packages
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(plyr)
+library(magrittr)
+library(dplyr)
+library(quanteda)
+library(spacyr)
+library(stm)
+library(DT)
+library(sna)
+library(ggplot2)
+library(ggrepel)
+library(rmarkdown)
+
+
+```
+
+# 3. Laden der CSV-Dateie
+
+```{r}
+
+df.kf2 <- read.csv("data/CASOTEX_forum.csv", sep=";")
+
+
+```
+
+
+# 4. Text Bereinigung & Aufbereitung 
+
+```{r message=FALSE, warning=FALSE, results = 'hide', eval = FALSE}
+tokens_forum <- spacy_text_cleaning(language = "de",
+                    dataframe = df.kf2,
+                    dataframe.text.col = as.character(df.kf2$Text),
+                    tokens.lemma = TRUE,
+                    remove.numb = TRUE,
+                    min.nchar = 4,
+                    collocation.min = 10,
+                    df.col.dfm = c("Text", "Jahr", "Ort"))
+
+#document term matrix 
+dfm_forum <- tokens_forum %>% 
+  dfm() %>% 
+  dfm_select(min_nchar = 4L) %>% 
+  dfm_trim(min_docfreq = 30) %>%  # minimum 50 documents (removes rare terms)
+   dfm_trim(max_docfreq = 0.25,
+            docfreq_type = 'prop') # maximum in 25 percent of documents (stop words)
+
+
+ 
+save.image('output_data/calculation_best_model_fourm_dzi.RData')
+load('output_data/calculation_best_model_fourm_dzi.RData')
+```
+Document-feature matrix of: 2,881 documents, 1,050 features (96.6% sparse).
+
+# 5. STM Evaluation 
+
+```{r}
+evaluation.list.forum <- evaluation_stm(dfm = dfm_forum, n.topics = c(20,40,60,80,100) )
+#output function 1: graph 
+plot.graph.forum <- evaluation.list.forum$graph
+plot.graph.forum
+ggsave("output_vis/evaluation_stm_modell_sm_excl_forum.png", width = 20, height = 10, units = "cm", dpi = 300)
+
+#output functio 2: dataframe evaluation (Semantic Coherence & Exclusivity)
+df.evaluation.forum <- evaluation.list.forum$df.evaluation
+write.csv(df.evaluation.forum, "output_data/df.evaluation.forum.csv")
+```
+
+# 6. STM Modell berechnen 
+
+```{r  warning=FALSE, paged.print=FALSE, results='hide'}
+
+#convert document term matrix to document frequency martix for the stm package
+dfm2stm.forum <- convert(dfm_forum, to = "stm")
+topic.count.forum <- 40
+
+#init.type - Spectral: The default choice, "Spectral", provides a deterministic inialization using the spectral algorithm given in Arora et al 2014. The fastes alorithm! 
+model.stm.forum <- stm(dfm2stm.forum$documents, 
+                 dfm2stm.forum$vocab, 
+                 K = topic.count.forum, 
+                 data = dfm2stm.forum$meta, 
+                 init.type = "Spectral") 
+
+save.image('output_data/calculation_best_model_fourm_dzi.RData')
+```
+
+
+# 7. Datei mit Toic Label laden
+
+```{r fig.height=12, fig.width=15}
+
+#Topics with the label "xxx_" mean that the topic cannot be interpreted well. 
+df.topic.labels.forum <- read.csv("neue_30_09_2020/df.topic.labels.forum.csv", header = TRUE, encoding ="utf-8")
+
+# "bad" topics delate  
+df.topic.labels.forum$label <- as.character(df.topic.labels.forum$label)
+df.topic.labels.forum <-df.topic.labels.forum %>% select(topic.id,label)
+
+topic.del.forum <- c(3,5,6,10,14,16,20,21,22,24,26,31,33,37,38,39,40)  
+
+```
+
+
+# 8. Überblick über die Topics und Wörter
+
+```{r, results= "asis"}
+load('output_data/calculation_best_model_fourm_dzi.RData')
+
+df.topics.score.forum <- data.frame(t(labelTopics(model.stm.forum, n = 40)$score))
+df.topic.score.forum2 <- df.topics.score.forum %>% head(10)
+
+
+paged_table(df.topic.score.forum2)
+
+```
+
+
+# 9. Visualisierung der Ergebnisse 
+
+## 9.1. Meist diskutieren Topics im Korpus
+
+```{r fig.height=7, fig.width=15}
+source("functions/top_topics_corpus.R")
+top_topics_corpus(stm.theta = model.stm.forum$theta, 
+                  df.topic.lables = df.topic.labels.forum,
+                  topic.del = topic.del.forum,
+                  n.top.topics.plot = 10)
+
+ggsave("output_vis/top_topics_forum.png", width = 40, height = 15, units = "cm", dpi = 300)
+
+```
+
+## 9.2. Word clouds 
+
+```{r fig.height=12, fig.width=15}
+
+topic.count.forum <- 40
+par(mfrow=c(2,2))
+for (i in seq_along(sample(1:topic.count.forum, size = topic.count.forum)))
+{
+  cloud(model.stm.forum, topic = i, scale = c(4,.40), 
+        max.words = 20, main = paste0("Topic ", df.topic.labels.forum$label[i],  
+                                      collapse = ", "))
+}
+```
+
+
+## 9.3. Topic Korrelationsnetzwerk 
+
+```{r fig.height=20, fig.width=20}
+source("functions/correlation_topic_network.R")
+
+networks.forum <- corr_networks(model.stm = model.stm.forum, 
+              df.col.topic.labels = df.topic.labels.forum,
+              min.correlation = 0.05)
+ggsave("output_vis/corr_network_forum.png", width = 50, height = 50, units = "cm", dpi = 300)
+
+print(networks.forum$graph2)
+```
+
+
+
+# 10. Erzeugung von Teilkorpora 
+
+```{r fig.height=5, fig.width=10}
+source("functions/topic_document_dataframe.R")
+
+
+df.kf3 <- df.kf2 %>% head(2880)
+
+
+
+df.Bewaehrungswiederruf <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 11, 
+                                procent.quantil = 0.99)
+
+write.csv(df.Bewaehrungswiederruf, "output_data/df.Bewaehrungswiederruf.forum.csv")
+
+df.familie_ueberforderung <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 15, 
+                                procent.quantil = 0.99)
+
+write.csv(df.Bewaehrungswiederruf, "output_data/df.familie_ueberforderung.forum.csv")
+
+df.familie <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 36, 
+                                procent.quantil = 0.99)
+
+write.csv(df.Bewaehrungswiederruf, "output_data/df.df.familie.csv")
+
+df.emotionaler_beistand <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 32, 
+                                procent.quantil = 0.99)
+
+write.csv(df.emotionaler_beistand, "output_data/df.emotionaler_beistand.forum.csv")
+
+df.vorzeitige_entlassung <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 18, 
+                                procent.quantil = 0.99)
+
+write.csv(df.vorzeitige_entlassung, "output_data/df.vorzeitige_entlassung.csv")
+
+
+
+df.zeit_knast <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 27, 
+                                procent.quantil = 0.99)
+
+write.csv(df.zeit_knast, "output_data/df.zeit_knast.csv")
+
+
+df.trennscheibe <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 13, 
+                                procent.quantil = 0.99)
+
+write.csv(df.trennscheibe, "output_data/df.trennscheibe.csv")
+
+
+df.familie_ueberforderung <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 15, 
+                                procent.quantil = 0.99)
+
+write.csv(df.familie_ueberforderung, "output_data/df.familie_ueberforderung.csv")
+
+df.besuche <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 8, 
+                                procent.quantil = 0.99)
+
+write.csv(df.besuche, "output_data/besuche.csv")
+
+
+df.mord_schuld <- topic_document_df(model.stm = model.stm.forum, 
+                                df.text = df.kf3, 
+                                df.text.col = as.character(df.kf3$Text), 
+                                topic.id = 29, 
+                                procent.quantil = 0.99)
+
+write.csv(df.mord_schuld, "output_data/df.mord_schuld.csv")
+
+dim(df.topic.straf)
+```
+
+
+# 11. Autoren der Studie 
+
+Christian Ghanem, Dr., ist Professor an der Technischen Hochschule Nürnberg Georg Simon Ohm. Arbeitsschwerpunkte: Straffälligenhilfe, Professionalisierung und Digitalisierung in der Sozialen Arbeit.
+
+Markus Eckl, MA, ist wissenschaftlicher Mitarbeiter am Lehrstuhl für Digital Humanities an der Universität Passau und Mitarbeiter beim Bezirk Oberpfalz. Arbeitsschwerpunkte: Digitalisierung und Wissenschaft der Sozialen Arbeit, Sozialplanung, quantitative Textanalyse, soziale Netzwerkanalyse.
+
+Jean-Pierre Widerhold, BA, ist Softwareentwickler am Institut für E-Beratung der Technischen Hochschule Nürnberg Georg Simon Ohm. Arbeitsschwerpunkt: Entwicklung von Softwarelösungen für den Sozialen Bereich
+
+Robert Lehmann, Dr., ist Professor an der Technischen Hochschule Nürnberg Georg Simon Ohm und Akademischer Leiter des Instituts für E-Beratung. Arbeitsschwerpunkte: Onlineberatung, Digitalisierung in der Sozialen Arbeit und Wirkungsforschung.
+
+
+
+
+
